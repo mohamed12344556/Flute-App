@@ -1,4 +1,3 @@
-import 'package:flaut_app/flute_trainer_%D9%90auto_detecte_screen.dart';
 import 'package:flaut_app/flute_trainer_screen_test.dart';
 import 'package:flutter/material.dart';
 
@@ -18,8 +17,8 @@ class MyApp extends StatelessWidget {
         primarySwatch: Colors.blue,
         visualDensity: VisualDensity.adaptivePlatformDensity,
       ),
-      home: FluteTrainerAutoScreen(),
-      // home: FluteTrainerTestScreen(),
+      // home: FluteTrainerAutoScreen(),
+      home: FluteTrainerTestScreen(),
       // home: FluteTrainerScreen(),
     );
   }

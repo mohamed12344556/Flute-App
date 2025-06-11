@@ -1,11 +1,11 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
+import 'package:audio_streamer/audio_streamer.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:pitch_detector_dart/pitch_detector.dart';
-import 'package:record/record.dart';
 
 class FluteTrainerTestScreen extends StatefulWidget {
   const FluteTrainerTestScreen({super.key});
@@ -15,7 +15,6 @@ class FluteTrainerTestScreen extends StatefulWidget {
 }
 
 class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
-  final AudioRecorder _audioRecorder = AudioRecorder();
   final PitchDetector _pitchDetector = PitchDetector();
 
   bool _isRecording = false;
@@ -26,19 +25,23 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
   String _feedbackText = 'اضغط للبدء';
   Color _feedbackColor = Colors.grey;
   Timer? _feedbackTimer;
-  Timer? _processingTimer;
-  final List<double> _recentFrequencies = [];
-  StreamSubscription<List<int>>? _recordingSubscription;
+  Timer? _analysisTimer;
+  StreamSubscription<List<double>>? _audioSubscription;
 
   // Buffer لتجميع البيانات الصوتية
-  final List<int> _audioBuffer = [];
-  static const int _targetBufferSize = PitchDetector.DEFAULT_BUFFER_SIZE * 2;
+  final List<double> _audioBuffer = [];
+  int? _sampleRate;
 
-  // إضافة متغير لتتبع آخر تردد صالح
+  // متغيرات التحكم في التوقيت
+  static const int _analysisIntervalMs = 100; // 100 ميلي ثانية
+  static const int _bufferSizeMs = 300; // زيادة حجم البافر لتحليل أفضل
+
+  // للتتبع
   double _lastValidFrequency = 0.0;
   DateTime _lastValidFrequencyTime = DateTime.now();
+  final List<double> _recentFrequencies = [];
 
-  // Note frequencies map - الترددات المرجعية للنغمات
+  // Note frequencies map - تم تحديث الترددات لتكون أكثر دقة
   static const Map<String, double> noteFrequencies = {
     'C4': 261.63,
     'C#4': 277.18,
@@ -65,9 +68,12 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
     'A#5': 932.33,
     'B5': 987.77,
     'C6': 1046.50,
+    'C#6': 1108.73,
+    'D6': 1174.66,
   };
 
-  static const int maxFrequencyHistory = 5;
+  static const int maxFrequencyHistory =
+      7; // زيادة التاريخ للحصول على نتائج أكثر استقراراً
 
   @override
   void initState() {
@@ -147,16 +153,15 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
 
   Future<void> _initializeAudio() async {
     try {
-      if (await _audioRecorder.hasPermission()) {
-        setState(() {
-          _isInitialized = true;
-          _isInitializing = false;
-          _feedbackText = 'جاهز للبدء!';
-          _feedbackColor = Colors.green;
-        });
-      } else {
-        throw Exception('لا يوجد إذن للتسجيل');
-      }
+      // تعيين معدل عينات أعلى للحصول على دقة أفضل
+      AudioStreamer().sampleRate = 44100; // معدل عينات قياسي عالي الجودة
+
+      setState(() {
+        _isInitialized = true;
+        _isInitializing = false;
+        _feedbackText = 'جاهز للبدء!';
+        _feedbackColor = Colors.green;
+      });
     } catch (e) {
       print('Failed to initialize audio: $e');
       if (mounted) {
@@ -170,50 +175,49 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
     }
   }
 
+  /// Callback لاستقبال البيانات الصوتية
+  void _onAudio(List<double> buffer) async {
+    if (!_isRecording) return;
+
+    // إضافة البيانات الجديدة للبافر
+    _audioBuffer.addAll(buffer);
+
+    // الحصول على معدل العينات إذا لم يكن معروفاً
+    _sampleRate ??= await AudioStreamer().actualSampleRate;
+  }
+
+  /// Callback للأخطاء
+  void _handleError(Object error) {
+    setState(() => _isRecording = false);
+    print('Audio streaming error: $error');
+    if (mounted) {
+      setState(() {
+        _feedbackText = 'خطأ في التسجيل: ${error.toString()}';
+        _feedbackColor = Colors.red;
+      });
+    }
+  }
+
   Future<void> _startRecording() async {
     try {
-      // تنظيف كامل للبيانات
+      // تنظيف البيانات
       _cleanupAudioData();
 
-      final recordStream = await _audioRecorder.startStream(
-        const RecordConfig(
-          encoder: AudioEncoder.pcm16bits,
-          numChannels: 1,
-          bitRate: 128000,
-          sampleRate: PitchDetector.DEFAULT_SAMPLE_RATE,
-        ),
+      // بدء الاستماع للصوت
+      _audioSubscription = AudioStreamer().audioStream.listen(
+        _onAudio,
+        onError: _handleError,
       );
 
-      _recordingSubscription = recordStream.listen(
-        (audioChunk) {
-          if (!_isRecording) return;
-          _audioBuffer.addAll(audioChunk);
-        },
-        onError: (error) {
-          print('خطأ في التسجيل: $error');
-          if (mounted) {
-            setState(() {
-              _feedbackText = 'خطأ في التسجيل: ${error.toString()}';
-              _feedbackColor = Colors.red;
-              _isRecording = false;
-            });
-          }
-        },
-      );
-
-      _processingTimer = Timer.periodic(
-        const Duration(milliseconds: 1),
+      // بدء مؤقت التحليل كل 100ms
+      _analysisTimer = Timer.periodic(
+        Duration(milliseconds: _analysisIntervalMs),
         (timer) {
-          // التحقق من أن التسجيل ما زال نشطاً
           if (!_isRecording) {
-
-
-
-            
             timer.cancel();
             return;
           }
-          _processAudioBuffer();
+          _analyzeAudio();
         },
       );
 
@@ -232,33 +236,47 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
     }
   }
 
-  void _processAudioBuffer() async {
-    if (!_isRecording || _audioBuffer.length < _targetBufferSize) {
+  void _analyzeAudio() async {
+    if (!_isRecording || _sampleRate == null || _audioBuffer.isEmpty) {
       return;
     }
 
     try {
-      final samplesToProcess = _audioBuffer.take(_targetBufferSize).toList();
-      _audioBuffer.removeRange(
-        0,
-        math.min(_targetBufferSize, _audioBuffer.length),
-      );
+      // حساب حجم البافر المطلوب للتحليل
+      final bufferSizeSamples = (_sampleRate! * _bufferSizeMs / 1000).round();
 
-      final intBuffer = Uint8List.fromList(samplesToProcess);
+      if (_audioBuffer.length < bufferSizeSamples) {
+        return; // لا توجد بيانات كافية للتحليل
+      }
+
+      // أخذ البيانات المطلوبة للتحليل
+      final samplesToAnalyze = _audioBuffer.take(bufferSizeSamples).toList();
+
+      // إزالة البيانات القديمة
+      final samplesToRemove = (bufferSizeSamples * 0.5).round();
+      if (_audioBuffer.length >= samplesToRemove) {
+        _audioBuffer.removeRange(0, samplesToRemove);
+      }
+
+      // تحويل البيانات لتنسيق مناسب للـ pitch detector - تم إصلاح التحويل
+      final intBuffer = _convertToInt16Buffer(samplesToAnalyze);
+
+      // تحليل التردد مع معدل العينات الصحيح
       final detectedPitch = await _pitchDetector.getPitchFromIntBuffer(
         intBuffer,
+        // sampleRate: _sampleRate!,
       );
 
+      // تحسين شروط التحقق من صحة التردد
       if (detectedPitch.pitched &&
-          detectedPitch.pitch > 80 &&
-          detectedPitch.pitch < 1500 &&
+          detectedPitch.pitch > 200 && // رفع الحد الأدنى
+          detectedPitch.pitch < 1200 && // تقليل الحد الأعلى
           !detectedPitch.pitch.isNaN &&
           !detectedPitch.pitch.isInfinite) {
-        
-        // تحديث آخر تردد صالح والوقت
+        // تحديث آخر تردد صالح
         _lastValidFrequency = detectedPitch.pitch;
         _lastValidFrequencyTime = DateTime.now();
-        
+
         _addFrequencyToHistory(detectedPitch.pitch);
         final smoothedFrequency = _getSmoothedFrequency();
 
@@ -270,8 +288,10 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
           });
         }
       } else {
-        // إذا لم يتم اكتشاف تردد صالح لأكثر من ثانية واحدة، قم بإعادة تعيين القيم
-        final timeSinceLastValid = DateTime.now().difference(_lastValidFrequencyTime).inMilliseconds;
+        // إذا لم يتم اكتشاف تردد صالح لأكثر من ثانية واحدة
+        final timeSinceLastValid = DateTime.now()
+            .difference(_lastValidFrequencyTime)
+            .inMilliseconds;
         if (timeSinceLastValid > 1000 && _isRecording) {
           if (mounted) {
             setState(() {
@@ -284,8 +304,24 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
         }
       }
     } catch (e) {
-      print('خطأ في معالجة الصوت: $e');
+      print('خطأ في تحليل الصوت: $e');
     }
+  }
+
+  /// تحويل البيانات من double إلى Uint8List بطريقة صحيحة للـ 16-bit PCM
+  Uint8List _convertToInt16Buffer(List<double> audioData) {
+    final samples = <int>[];
+
+    for (double sample in audioData) {
+      // تحويل من [-1.0, 1.0] إلى [-32768, 32767] للـ 16-bit signed PCM
+      int intSample = (sample.clamp(-1.0, 1.0) * 32767).round();
+
+      // إضافة كـ little-endian 16-bit signed integer
+      samples.add(intSample & 0xFF); // البايت الأقل أهمية
+      samples.add((intSample >> 8) & 0xFF); // البايت الأكثر أهمية
+    }
+
+    return Uint8List.fromList(samples);
   }
 
   String _getClosestNote(double frequency) {
@@ -294,6 +330,7 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
     String closestNote = 'C4';
     double minDifference = double.infinity;
 
+    // البحث عن أقرب نغمة بدقة أكبر
     noteFrequencies.forEach((note, freq) {
       double difference = (frequency - freq).abs();
       if (difference < minDifference) {
@@ -301,6 +338,17 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
         closestNote = note;
       }
     });
+
+    // التحقق من أن الفرق ليس كبيراً جداً
+    final targetFreq = noteFrequencies[closestNote]!;
+    final percentageDiff = (frequency - targetFreq).abs() / targetFreq * 100;
+
+    // إذا كان الفرق أكبر من 12% (تقريباً نصف نغمة) فقد تكون هناك مشكلة
+    if (percentageDiff > 12) {
+      print(
+        'تحذير: فرق كبير في التردد - المكتشف: $frequency Hz، المتوقع: $targetFreq Hz',
+      );
+    }
 
     return closestNote;
   }
@@ -319,28 +367,22 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
 
   Future<void> _stopRecording() async {
     try {
-      // إيقاف التسجيل أولاً
       setState(() {
         _isRecording = false;
       });
 
-      // إيقاف المؤقت
-      _processingTimer?.cancel();
-      _processingTimer = null;
+      // إيقاف المؤقتات
+      _analysisTimer?.cancel();
+      _analysisTimer = null;
+      _feedbackTimer?.cancel();
+      _feedbackTimer = null;
 
-      // إيقاف الاشتراك في التسجيل
-      await _recordingSubscription?.cancel();
-      _recordingSubscription = null;
-
-      // إيقاف المسجل
-      await _audioRecorder.stop();
+      // إيقاف الاشتراك في الصوت
+      await _audioSubscription?.cancel();
+      _audioSubscription = null;
 
       // تنظيف البيانات
       _cleanupAudioData();
-
-      // إيقاف مؤقت التغذية الراجعة
-      _feedbackTimer?.cancel();
-      _feedbackTimer = null;
 
       setState(() {
         _feedbackText = 'تم إيقاف التسجيل';
@@ -348,7 +390,6 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
         _currentFrequency = 0.0;
         _detectedNote = '--';
       });
-
     } catch (e) {
       print('خطأ في إيقاف التسجيل: $e');
     }
@@ -379,8 +420,15 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
 
     if (validFreqs.isEmpty) return 0.0;
 
-    double sum = validFreqs.reduce((a, b) => a + b);
-    return sum / validFreqs.length;
+    // استخدام الوسيط بدلاً من المتوسط لتقليل تأثير القيم الشاذة
+    validFreqs.sort();
+    if (validFreqs.length % 2 == 0) {
+      return (validFreqs[validFreqs.length ~/ 2 - 1] +
+              validFreqs[validFreqs.length ~/ 2]) /
+          2;
+    } else {
+      return validFreqs[validFreqs.length ~/ 2];
+    }
   }
 
   void _updateFeedback() {
@@ -393,7 +441,6 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
     final cents = _getCentsDifference();
 
     if (cents.abs() <= 10) {
-      // Very close in cents
       _feedbackText = '🎯 ممتاز! مضبوط تماماً';
       _feedbackColor = Colors.green;
     } else if (cents > 10) {
@@ -412,7 +459,6 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
       _feedbackColor = Colors.blue;
     }
 
-    // إلغاء المؤقت السابق قبل إنشاء واحد جديد
     _feedbackTimer?.cancel();
     _feedbackTimer = Timer(const Duration(seconds: 3), () {
       if (mounted && _isRecording) {
@@ -454,7 +500,70 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Box الأول - النغمة المكتشفة
+            // معلومات التحليل
+            Card(
+              elevation: 2,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    Column(
+                      children: [
+                        const Text(
+                          'معدل التحليل',
+                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                        Text(
+                          '${_analysisIntervalMs}ms',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Column(
+                      children: [
+                        const Text(
+                          'معدل العينات',
+                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                        Text(
+                          '${_sampleRate ?? "---"} Hz',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Column(
+                      children: [
+                        const Text(
+                          'حجم البافر',
+                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                        Text(
+                          '${_bufferSizeMs}ms',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // النغمة المكتشفة
             Card(
               elevation: 4,
               shape: RoundedRectangleBorder(
@@ -493,7 +602,7 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
 
             const SizedBox(height: 20),
 
-            // Box التاني - المسافة من النغمة المكتشفة
+            // دقة العزف
             Card(
               elevation: 4,
               shape: RoundedRectangleBorder(
@@ -573,7 +682,7 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
 
             const SizedBox(height: 20),
 
-            // حالة التغذية الراجعة
+            // التغذية الراجعة
             Card(
               elevation: 4,
               shape: RoundedRectangleBorder(
@@ -596,7 +705,7 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
 
             const SizedBox(height: 30),
 
-            // زر التسجيل/الإيقاف
+            // زر التسجيل
             ElevatedButton.icon(
               onPressed: _isInitializing ? null : _toggleRecording,
               icon: Icon(_isRecording ? Icons.stop : Icons.mic, size: 28),
@@ -625,9 +734,8 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
   @override
   void dispose() {
     _feedbackTimer?.cancel();
-    _processingTimer?.cancel();
-    _recordingSubscription?.cancel();
-    _audioRecorder.dispose();
+    _analysisTimer?.cancel();
+    _audioSubscription?.cancel();
     super.dispose();
   }
 }
