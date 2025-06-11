@@ -28,11 +28,11 @@ environment:
 # the latest version available on pub.dev. To see which dependencies have newer
 # versions available, run `flutter pub outdated`.
 dependencies:
-  audio_streamer: ^4.0.0
+  audio_streamer: ^4.2.0
   cupertino_icons: ^1.0.8
   flutter:
     sdk: flutter
-  permission_handler: ^12.0.0+1
+  permission_handler: ^11.4.0
   pitch_detector_dart: ^0.0.7
   record: ^6.0.0
 

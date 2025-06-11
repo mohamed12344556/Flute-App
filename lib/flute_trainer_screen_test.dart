@@ -385,7 +385,7 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
       _cleanupAudioData();
 
       setState(() {
-        _feedbackText = 'تم إيقاف التسجيل';
+        _feedbackText = 'جاهز للبدء !';
         _feedbackColor = Colors.grey;
         _currentFrequency = 0.0;
         _detectedNote = '--';
@@ -613,7 +613,7 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
                 child: Column(
                   children: [
                     const Text(
-                      'دقة العزف',
+                      'البعد عن النوتة',
                       style: TextStyle(
                         fontSize: 16,
                         color: Colors.grey,
@@ -621,59 +621,15 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        Column(
-                          children: [
-                            const Text(
-                              'الفرق بالهرتز',
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Colors.grey,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              '${_getFrequencyDifference().toStringAsFixed(2)} Hz',
-                              style: TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                                color: _getFrequencyDifference().abs() <= 15
-                                    ? Colors.green
-                                    : Colors.red,
-                              ),
-                            ),
-                          ],
-                        ),
-                        Container(
-                          height: 40,
-                          width: 1,
-                          color: Colors.grey[300],
-                        ),
-                        Column(
-                          children: [
-                            const Text(
-                              'الفرق بالسنت',
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Colors.grey,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              '${_getCentsDifference().toStringAsFixed(0)} ¢',
-                              style: TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                                color: _getCentsDifference().abs() <= 10
-                                    ? Colors.green
-                                    : Colors.red,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
+                    Text(
+                      '${_getCentsDifference().toStringAsFixed(0)} Cent',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        color: _getCentsDifference().abs() <= 10
+                            ? Colors.green
+                            : Colors.red,
+                      ),
                     ),
                   ],
                 ),
@@ -706,15 +662,8 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
             const SizedBox(height: 30),
 
             // زر التسجيل
-            ElevatedButton.icon(
+            ElevatedButton(
               onPressed: _isInitializing ? null : _toggleRecording,
-              icon: Icon(_isRecording ? Icons.stop : Icons.mic, size: 28),
-              label: Text(
-                _isInitializing
-                    ? 'جاري التحميل...'
-                    : (_isRecording ? 'إيقاف التسجيل' : 'بدء التسجيل'),
-                style: const TextStyle(fontSize: 18),
-              ),
               style: ElevatedButton.styleFrom(
                 backgroundColor: _isRecording ? Colors.red : Colors.green,
                 foregroundColor: Colors.white,
@@ -723,6 +672,12 @@ class _FluteTrainerTestScreenState extends State<FluteTrainerTestScreen> {
                   borderRadius: BorderRadius.circular(12),
                 ),
                 elevation: 4,
+              ),
+              child: Text(
+                _isInitializing
+                    ? 'جاري التحميل...'
+                    : (_isRecording ? 'إيقاف التسجيل' : 'بدء التسجيل'),
+                style: const TextStyle(fontSize: 18),
               ),
             ),
           ],
